@@ -1,23 +1,43 @@
 # SSH Tailscale
 
-A CLI utility for easily connecting to your Tailscale nodes via SSH.
+A CLI utility that makes it easy to connect to your Tailscale nodes via SSH using an interactive terminal interface.
 
 ## Features
 
-- Lists all available Tailscale nodes
-- Fuzzy search functionality to quickly find the node you want
-- Simple user interface for selecting nodes and entering username
-- Automatic SSH connection after selection
+- Interactive terminal UI with fuzzy search functionality
+- Displays all Tailscale nodes with their connection status
+- Remembers your last used username for SSH connections
+- Keyboard navigation with Vim-style keys support (j/k, Page Up/Down)
+- Intuitive bottom-up display that mimics typical terminal usage
 
 ## Prerequisites
 
 - Tailscale must be installed and configured
 - SSH client must be installed
+- Rust and Cargo for installation from source
 
 ## Installation
 
+### From Source
+
 1. Clone this repository
-2. Build and install via `cargo install --path .`
+2. Build the project with Cargo:
+
+```bash
+cargo build --release
+```
+
+3. Add the binary to your PATH by creating a symlink:
+
+```bash
+# Option 1: Link to /usr/local/bin (requires sudo)
+sudo ln -s "$(pwd)/target/release/ssh-tailscale" /usr/local/bin/ssh-tailscale
+
+# Option 2: Link to ~/.local/bin (create directory if it doesn't exist)
+mkdir -p ~/.local/bin
+ln -s "$(pwd)/target/release/ssh-tailscale" ~/.local/bin/ssh-tailscale
+# Make sure ~/.local/bin is in your PATH
+```
 
 ## Usage
 
@@ -27,6 +47,33 @@ Simply run the command:
 ssh-tailscale
 ```
 
-1. Select a Tailscale node using fuzzy search
-2. Enter the username for the SSH connection
-3. The tool will connect you via SSH
+### Navigation
+
+- **Up/Down arrows** or **k/j keys**: Navigate through the list of nodes
+- **Page Up/Down**: Move up/down by page
+- **Home/End**: Jump to the beginning/end of the list
+- **Enter**: Select the current node and connect via SSH
+- **Type text**: Filter nodes by hostname in real-time
+- **Esc**: Clear the current filter
+- **Ctrl+C**: Exit the application
+
+## Configuration
+
+The application stores configuration in `~/.config/ssh-tailscale/config.json`, which currently includes:
+
+- `default_username`: The last username you used for SSH connections
+
+## Development
+
+The application is built with:
+
+- [Rust](https://www.rust-lang.org/)
+- [Ratatui](https://github.com/ratatui-org/ratatui) for the terminal UI
+- [Crossterm](https://github.com/crossterm-rs/crossterm) for cross-platform terminal support
+- [Anyhow](https://github.com/dtolnay/anyhow) for error handling
+- [Regex](https://github.com/rust-lang/regex) for parsing Tailscale output
+- [Serde](https://github.com/serde-rs/serde) for configuration serialization
+
+## License
+
+MIT

@@ -9,7 +9,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Terminal,
 };
@@ -17,34 +17,47 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, Write},
+    io,
     path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
+/// Configuration for the SSH Tailscale app, stored between sessions
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct Config {
+    /// Default username to use for SSH connections
     default_username: String,
+    /// Last selected node name for auto-selection next time
+    last_selected_node: String,
 }
 
+/// Represents a Tailscale node from the 'tailscale status' command
 struct TailscaleNode {
+    /// Hostname of the node
     name: String,
+    /// IP address of the node
     ip: String,
+    /// Suggested username from tailscale status, if available
     suggested_user: String,
+    /// Connection status (active, offline, etc.)
     status: String,
 }
 
-/// App holds the state of the application
+/// App state for the terminal UI
 struct App {
+    /// All available nodes
     nodes: Vec<TailscaleNode>,
+    /// Indices of filtered nodes
     filtered_nodes: Vec<usize>,
+    /// Current search filter text
     filter: String,
+    /// Currently selected node index in filtered list
     selection: usize,
-    scroll_offset: usize,
 }
 
 impl App {
+    /// Create a new App with the provided nodes
     fn new(nodes: Vec<TailscaleNode>) -> Self {
         let filtered_nodes = (0..nodes.len()).collect();
         Self {
@@ -52,14 +65,16 @@ impl App {
             filtered_nodes,
             filter: String::new(),
             selection: 0,
-            scroll_offset: 0,
         }
     }
 
+    /// Apply the current filter to the nodes list
     fn apply_filter(&mut self) {
         if self.filter.is_empty() {
+            // Show all nodes when no filter is applied
             self.filtered_nodes = (0..self.nodes.len()).collect();
         } else {
+            // Filter nodes based on case-insensitive name matching
             let lower_filter = self.filter.to_lowercase();
             self.filtered_nodes = (0..self.nodes.len())
                 .filter(|&i| self.nodes[i].name.to_lowercase().contains(&lower_filter))
@@ -74,27 +89,35 @@ impl App {
         }
     }
 
+    /// Move selection up (visually)
     fn move_selection_up(&mut self) {
-        if self.filtered_nodes.is_empty() {
-            return;
-        }
-
-        if self.selection + 1 < self.filtered_nodes.len() {
-            self.selection += 1;
-        }
-    }
-
-    fn move_selection_down(&mut self) {
-        if self.filtered_nodes.is_empty() {
-            return;
-        }
-
-        if self.selection > 0 {
+        if !self.filtered_nodes.is_empty() && self.selection > 0 {
             self.selection -= 1;
         }
     }
 
+    /// Move selection down (visually)
+    fn move_selection_down(&mut self) {
+        if !self.filtered_nodes.is_empty() && self.selection + 1 < self.filtered_nodes.len() {
+            self.selection += 1;
+        }
+    }
+
+    /// Move selection up a full page
     fn move_page_up(&mut self, page_size: usize) {
+        if self.filtered_nodes.is_empty() {
+            return;
+        }
+
+        if self.selection >= page_size {
+            self.selection -= page_size;
+        } else {
+            self.selection = 0;
+        }
+    }
+
+    /// Move selection down a full page
+    fn move_page_down(&mut self, page_size: usize) {
         if self.filtered_nodes.is_empty() {
             return;
         }
@@ -106,30 +129,21 @@ impl App {
         }
     }
 
-    fn move_page_down(&mut self, page_size: usize) {
-        if self.filtered_nodes.is_empty() {
-            return;
-        }
-
-        if self.selection > page_size {
-            self.selection -= page_size;
-        } else {
-            self.selection = 0;
-        }
-    }
-
+    /// Move to the first item in the list
     fn move_to_start(&mut self) {
         if !self.filtered_nodes.is_empty() {
             self.selection = 0;
         }
     }
 
+    /// Move to the last item in the list
     fn move_to_end(&mut self) {
         if !self.filtered_nodes.is_empty() {
             self.selection = self.filtered_nodes.len() - 1;
         }
     }
 
+    /// Get the currently selected node, if available
     fn get_selected_node(&self) -> Option<&TailscaleNode> {
         if self.filtered_nodes.is_empty() {
             None
@@ -151,8 +165,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
     
-    // Setup terminal
-    let selected_node = run_tui(nodes)?;
+    // Run the terminal UI to select a node
+    let selected_node = run_tui(nodes, &config.last_selected_node)?;
+    
+    // Save the selected node for next time
+    config.last_selected_node = selected_node.name.clone();
+    save_config(&config)?;
     
     // Get the default username from config or fallback to "ubuntu"
     let default_username = if !config.default_username.is_empty() {
@@ -192,7 +210,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_tui(nodes: Vec<TailscaleNode>) -> Result<TailscaleNode> {
+/// Run the terminal UI for node selection
+fn run_tui(nodes: Vec<TailscaleNode>, last_selected_node: &str) -> Result<TailscaleNode> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -200,71 +219,94 @@ fn run_tui(nodes: Vec<TailscaleNode>) -> Result<TailscaleNode> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app state
+    // Create app state with initial selection
     let mut app = App::new(nodes);
+    
+    // Find and select the last used node if available
+    if !last_selected_node.is_empty() {
+        // Find the index of the last selected node
+        if let Some((index, _)) = app.nodes.iter().enumerate()
+            .find(|(_, node)| node.name == last_selected_node) {
+            // Only update if the node is found
+            app.selection = index;
+        }
+    }
+    
+    // Final result storage
+    let result;
 
     // Main loop
-    let tick_rate = Duration::from_millis(100);
-    let mut last_tick = Instant::now();
-    let result = loop {
-        // Draw UI
-        terminal.draw(|f| ui(f, &mut app))?;
+    {
+        let tick_rate = Duration::from_millis(100);
+        let mut last_tick = Instant::now();
+        
+        // This loop runs until a node is selected or the user exits
+        loop {
+            // Draw the UI
+            terminal.draw(|f| ui(f, &mut app))?;
 
-        // Handle input
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
-        if crossterm::event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break Err(anyhow!("User cancelled"));
-                    }
-                    KeyCode::Enter => {
-                        if let Some(node) = app.get_selected_node() {
-                            // Make a copy of the selected node to return
-                            let selected_node = TailscaleNode {
-                                name: node.name.clone(),
-                                ip: node.ip.clone(),
-                                suggested_user: node.suggested_user.clone(),
-                                status: node.status.clone(),
-                            };
-                            break Ok(selected_node);
+            // Handle events with timeout
+            let timeout = tick_rate
+                .checked_sub(last_tick.elapsed())
+                .unwrap_or_else(|| Duration::from_secs(0));
+                
+            if crossterm::event::poll(timeout)? {
+                if let Event::Key(key) = event::read()? {
+                    match key.code {
+                        // Exit on Ctrl+C or Ctrl+Q
+                        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            result = Err(anyhow!("User cancelled"));
+                            break;
                         }
+                        // Select current node on Enter
+                        KeyCode::Enter => {
+                            if let Some(node) = app.get_selected_node() {
+                                // Make a copy of the selected node to return
+                                let selected_node = TailscaleNode {
+                                    name: node.name.clone(),
+                                    ip: node.ip.clone(),
+                                    suggested_user: node.suggested_user.clone(),
+                                    status: node.status.clone(),
+                                };
+                                result = Ok(selected_node);
+                                break;
+                            }
+                        }
+                        // Navigation keys
+                        KeyCode::Up => app.move_selection_up(), 
+                        KeyCode::Down => app.move_selection_down(),
+                        KeyCode::Char('k') => app.move_selection_up(),
+                        KeyCode::Char('j') => app.move_selection_down(),
+                        KeyCode::PageUp => app.move_page_up(10),
+                        KeyCode::PageDown => app.move_page_down(10),
+                        KeyCode::Home => app.move_to_start(),
+                        KeyCode::End => app.move_to_end(),
+                        // Filter text editing
+                        KeyCode::Backspace => {
+                            app.filter.pop();
+                            app.apply_filter();
+                        }
+                        KeyCode::Esc => {
+                            app.filter.clear();
+                            app.apply_filter();
+                        }
+                        KeyCode::Char(c) => {
+                            app.filter.push(c);
+                            app.apply_filter();
+                        }
+                        _ => {}
                     }
-                    // Swap keys for bottom-up display
-                    KeyCode::Up => app.move_selection_up(), 
-                    KeyCode::Down => app.move_selection_down(),
-                    // Add j/k key support for vim users
-                    KeyCode::Char('j') => app.move_selection_down(),
-                    KeyCode::Char('k') => app.move_selection_up(),
-                    KeyCode::PageUp => app.move_page_up(10),
-                    KeyCode::PageDown => app.move_page_down(10),
-                    KeyCode::Home => app.move_to_start(),
-                    KeyCode::End => app.move_to_end(),
-                    KeyCode::Backspace => {
-                        app.filter.pop();
-                        app.apply_filter();
-                    }
-                    KeyCode::Esc => {
-                        app.filter.clear();
-                        app.apply_filter();
-                    }
-                    KeyCode::Char(c) => {
-                        app.filter.push(c);
-                        app.apply_filter();
-                    }
-                    _ => {}
                 }
             }
-        }
 
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = Instant::now();
+            // Refresh timer
+            if last_tick.elapsed() >= tick_rate {
+                last_tick = Instant::now();
+            }
         }
-    };
+    }
 
-    // Restore terminal
+    // Restore terminal state
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -277,6 +319,7 @@ fn run_tui(nodes: Vec<TailscaleNode>) -> Result<TailscaleNode> {
     result
 }
 
+/// Render the UI using Ratatui
 fn ui(f: &mut ratatui::Frame, app: &mut App) {
     let size = f.size();
 
@@ -294,7 +337,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         )
         .split(size);
 
-    // Header
+    // Header with title and node count
     let header_text = vec![
         Line::from(vec![
             Span::styled(
@@ -315,18 +358,20 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
     // List of nodes from bottom to top
     if !app.filtered_nodes.is_empty() {
-        // Create list items, but in reverse order for bottom-up display
+        // Create list items in reverse order for bottom-up display
         let mut items: Vec<ListItem> = Vec::new();
         
-        for (i, &idx) in app.filtered_nodes.iter().enumerate().rev() {
+        for &idx in app.filtered_nodes.iter().rev() {
             let node = &app.nodes[idx];
             
+            // Color status based on online/offline
             let status_style = if node.status.contains("active") {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::Red)
             };
             
+            // Format node information
             let content = Line::from(vec![
                 Span::raw(format!("{:30}", node.name)),
                 Span::raw(format!("{:15}", node.ip)),
@@ -345,7 +390,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             )
             .highlight_symbol("> ");
         
-        // Since we reversed the items for display, we need to convert the actual selection index
+        // Since we reversed the items for display, we need to convert the selection index
         let display_selection = app.filtered_nodes.len() - 1 - app.selection;
         
         // Use stateful list to track selection
@@ -360,7 +405,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         f.render_widget(no_results, chunks[1]);
     }
 
-    // Footer with search bar
+    // Footer with search bar and help text
     let search_text = format!("Search: {}", app.filter);
     let search = Paragraph::new(search_text)
         .style(Style::default())
@@ -412,6 +457,7 @@ fn save_config(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Parse the output of 'tailscale status' to get a list of nodes
 fn get_tailscale_nodes() -> Result<Vec<TailscaleNode>> {
     // Run 'tailscale status' command
     let output = Command::new("tailscale")
