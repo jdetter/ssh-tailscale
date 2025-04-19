@@ -76,4 +76,4 @@ The application is built with:
 
 ## License
 
-MIT
+Licensed under the [Apache License, Version 2.0](LICENSE) (the "License"); you may not use this software except in compliance with the License.

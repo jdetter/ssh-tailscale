@@ -2,6 +2,9 @@
 name = "ssh-tailscale"
 version = "0.1.0"
 edition = "2024"
+authors = ["John Detter <no-reply@boppygames.gg>"]
+description = "A CLI utility for easily connecting to your Tailscale nodes via SSH"
+license = "Apache-2.0"
 
 [dependencies]
 fuzzy-matcher = "0.3.7"
