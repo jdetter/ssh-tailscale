@@ -21,22 +21,11 @@ A CLI utility that makes it easy to connect to your Tailscale nodes via SSH usin
 ### From Source
 
 1. Clone this repository
-2. Build the project with Cargo:
+2. Build and install:
 
-```bash
-cargo build --release
 ```
-
-3. Add the binary to your PATH by creating a symlink:
-
-```bash
-# Option 1: Link to /usr/local/bin (requires sudo)
-sudo ln -s "$(pwd)/target/release/ssh-tailscale" /usr/local/bin/ssh-tailscale
-
-# Option 2: Link to ~/.local/bin (create directory if it doesn't exist)
-mkdir -p ~/.local/bin
-ln -s "$(pwd)/target/release/ssh-tailscale" ~/.local/bin/ssh-tailscale
-# Make sure ~/.local/bin is in your PATH
+cd ssh-tailscale
+cargo install --path .
 ```
 
 ## Usage
