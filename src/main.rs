@@ -89,17 +89,19 @@ impl App {
         }
     }
 
-    /// Move selection up (visually)
+    /// Move selection up (visually) - IMPORTANT: When rendering bottom-to-top, 
+    /// moving "up" visually means INCREASING the index in the array
     fn move_selection_up(&mut self) {
-        if !self.filtered_nodes.is_empty() && self.selection > 0 {
-            self.selection -= 1;
+        if !self.filtered_nodes.is_empty() && self.selection + 1 < self.filtered_nodes.len() {
+            self.selection += 1;
         }
     }
 
-    /// Move selection down (visually)
+    /// Move selection down (visually) - IMPORTANT: When rendering bottom-to-top,
+    /// moving "down" visually means DECREASING the index in the array
     fn move_selection_down(&mut self) {
-        if !self.filtered_nodes.is_empty() && self.selection + 1 < self.filtered_nodes.len() {
-            self.selection += 1;
+        if !self.filtered_nodes.is_empty() && self.selection > 0 {
+            self.selection -= 1;
         }
     }
 
@@ -272,9 +274,10 @@ fn run_tui(nodes: Vec<TailscaleNode>, last_selected_node: &str) -> Result<Tailsc
                                 break;
                             }
                         }
-                        // Navigation keys
+                        // Navigation keys - correct visual direction
                         KeyCode::Up => app.move_selection_up(), 
                         KeyCode::Down => app.move_selection_down(),
+                        // Vim keys - match visual direction
                         KeyCode::Char('k') => app.move_selection_up(),
                         KeyCode::Char('j') => app.move_selection_down(),
                         KeyCode::PageUp => app.move_page_up(10),
@@ -371,10 +374,10 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
                 Style::default().fg(Color::Red)
             };
             
-            // Format node information
+            // Format node information with improved spacing
             let content = Line::from(vec![
-                Span::raw(format!("{:30}", node.name)),
-                Span::raw(format!("{:15}", node.ip)),
+                Span::raw(format!("{:<55}", node.name)),  // Increase padding even more for hostname
+                Span::raw(format!("{:<20}", node.ip)),    // Add more space for IP address
                 Span::styled(&node.status, status_style),
             ]);
             
@@ -383,10 +386,14 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         
         // Display the list with selection
         let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::NONE)
+            )
             .highlight_style(
                 Style::default()
                     .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
+                    .add_modifier(Modifier::BOLD)
             )
             .highlight_symbol("> ");
         
