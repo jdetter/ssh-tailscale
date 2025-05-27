@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -20,6 +20,7 @@ use std::{
     io,
     path::PathBuf,
     process::{Command, Stdio},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -218,8 +219,15 @@ fn run_tui(nodes: Vec<TailscaleNode>, last_selected_node: &str) -> Result<Tailsc
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    
+    // Flush to ensure all terminal commands are processed
+    io::Write::flush(&mut stdout)?;
+    
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    
+    // Additional terminal stabilization for Windows
+    terminal.clear()?;
 
     // Create app state with initial selection
     let mut app = App::new(nodes);
@@ -234,71 +242,96 @@ fn run_tui(nodes: Vec<TailscaleNode>, last_selected_node: &str) -> Result<Tailsc
         }
     }
     
+    // Draw the initial UI before starting event loop
+    terminal.draw(|f| ui(f, &mut app))?;
+    
+    // Add a delay to let the terminal settle on Windows and ensure first draw is complete
+    thread::sleep(Duration::from_millis(150));
+    
+    // Clear any pending events that might have been generated during terminal setup
+    // This is particularly important on Windows/MINGW where spurious events can occur
+    while crossterm::event::poll(Duration::from_millis(0))? {
+        let _ = event::read()?; // Discard any pending events
+    }
+    
     // Final result storage
     let result;
 
     // Main loop
     {
-        let tick_rate = Duration::from_millis(100);
+        let tick_rate = Duration::from_millis(250); // Increased tick rate for Windows
         let mut last_tick = Instant::now();
         
         // This loop runs until a node is selected or the user exits
         loop {
-            // Draw the UI
+            // Draw the UI (redraw for any changes)
             terminal.draw(|f| ui(f, &mut app))?;
 
-            // Handle events with timeout
+            // Handle events with timeout - use a longer timeout on Windows
             let timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
                 
-            if crossterm::event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    match key.code {
-                        // Exit on Ctrl+C or Ctrl+Q
-                        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            result = Err(anyhow!("User cancelled"));
-                            break;
-                        }
-                        // Select current node on Enter
-                        KeyCode::Enter => {
-                            if let Some(node) = app.get_selected_node() {
-                                // Make a copy of the selected node to return
-                                let selected_node = TailscaleNode {
-                                    name: node.name.clone(),
-                                    ip: node.ip.clone(),
-                                    suggested_user: node.suggested_user.clone(),
-                                    status: node.status.clone(),
-                                };
-                                result = Ok(selected_node);
-                                break;
+            // Check for events with a minimum timeout to prevent busy waiting
+            let event_timeout = std::cmp::max(timeout, Duration::from_millis(100));
+            
+            if crossterm::event::poll(event_timeout)? {
+                match event::read()? {
+                    Event::Key(key) => {
+                        // Only process key press events, not key release events
+                        // This prevents double triggering on Windows/MINGW
+                        if key.kind == KeyEventKind::Press {
+                            match key.code {
+                                // Exit on Ctrl+C or Ctrl+Q
+                                KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    result = Err(anyhow!("User cancelled"));
+                                    break;
+                                }
+                                // Select current node on Enter
+                                KeyCode::Enter => {
+                                    if let Some(node) = app.get_selected_node() {
+                                        // Make a copy of the selected node to return
+                                        let selected_node = TailscaleNode {
+                                            name: node.name.clone(),
+                                            ip: node.ip.clone(),
+                                            suggested_user: node.suggested_user.clone(),
+                                            status: node.status.clone(),
+                                        };
+                                        result = Ok(selected_node);
+                                        break;
+                                    }
+                                }
+                                // Navigation keys - correct visual direction
+                                KeyCode::Up => app.move_selection_up(), 
+                                KeyCode::Down => app.move_selection_down(),
+                                // Vim keys - match visual direction
+                                KeyCode::Char('k') => app.move_selection_up(),
+                                KeyCode::Char('j') => app.move_selection_down(),
+                                KeyCode::PageUp => app.move_page_up(10),
+                                KeyCode::PageDown => app.move_page_down(10),
+                                KeyCode::Home => app.move_to_start(),
+                                KeyCode::End => app.move_to_end(),
+                                // Filter text editing
+                                KeyCode::Backspace => {
+                                    app.filter.pop();
+                                    app.apply_filter();
+                                }
+                                KeyCode::Esc => {
+                                    app.filter.clear();
+                                    app.apply_filter();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.filter.push(c);
+                                    app.apply_filter();
+                                }
+                                _ => {
+                                    // Ignore other key events
+                                }
                             }
                         }
-                        // Navigation keys - correct visual direction
-                        KeyCode::Up => app.move_selection_up(), 
-                        KeyCode::Down => app.move_selection_down(),
-                        // Vim keys - match visual direction
-                        KeyCode::Char('k') => app.move_selection_up(),
-                        KeyCode::Char('j') => app.move_selection_down(),
-                        KeyCode::PageUp => app.move_page_up(10),
-                        KeyCode::PageDown => app.move_page_down(10),
-                        KeyCode::Home => app.move_to_start(),
-                        KeyCode::End => app.move_to_end(),
-                        // Filter text editing
-                        KeyCode::Backspace => {
-                            app.filter.pop();
-                            app.apply_filter();
-                        }
-                        KeyCode::Esc => {
-                            app.filter.clear();
-                            app.apply_filter();
-                        }
-                        KeyCode::Char(c) => {
-                            app.filter.push(c);
-                            app.apply_filter();
-                        }
-                        _ => {}
                     }
+                    // Ignore other event types (mouse, resize, etc.)
+                    _ => {}
                 }
             }
 
